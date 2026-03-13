@@ -158,10 +158,6 @@ Access the dashboard at `http://localhost:9607` (or your server IP, or via Home 
    - Enter comma-separated Device IDs in the `Target Device ID` field (e.g., `1, 2`).
    - New photos will be immediately pushed to these devices if they are online.
 
-### Storage Recommendation
-
-For shared environments or high-reliability setups, **NFS** is the recommended protocol for mounting the `/data` directory, as it has been confirmed to work reliably for shared photo storage.
-
 ### URL Proxy Setup
 
 1. Go to **Settings** → **Data Sources**.

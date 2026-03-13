@@ -10,7 +10,6 @@
 - Telegram Bot: Per-photo caption saving and display support
 - Telegram Bot: Instant push to multiple devices with real-time feedback
 - Image: Support for "Smart Collage" with Telegram photos
-- Documentation: Added recommendation for NFS storage usage
 
 ## v1.5.4
 
