@@ -7,6 +7,7 @@
         <v-tab value="immich">Immich</v-tab>
         <v-tab value="google_photos">Google Photos</v-tab>
         <v-tab value="synology_photos">Synology</v-tab>
+        <v-tab value="telegram">Telegram</v-tab>
       </v-tabs>
       <v-card-text>
         <Gallery />
@@ -1975,6 +1976,8 @@ watch(galleryTab, (val) => {
     galleryStore.setSource('synology_photos');
   } else if (val === 'immich') {
     galleryStore.setSource('immich');
+  } else if (val === 'telegram') {
+    galleryStore.setSource('telegram');
   }
 });
 

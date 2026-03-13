@@ -66,6 +66,7 @@ func (bot *Bot) Start() {
 		{Text: "list", Description: "List photos (e.g. /list 2)"},
 		{Text: "get", Description: "Retrieve photos by ID (e.g. /get 1 2 3)"},
 		{Text: "delete", Description: "Delete photos by ID (e.g. /delete 1 2 3)"},
+		{Text: "next", Description: "Force next photo by ID (e.g. /next 1)"},
 		{Text: "clear", Description: "Clear all Telegram photos"},
 	}
 	if err := bot.b.SetCommands(commands); err != nil {
@@ -102,9 +103,11 @@ func (bot *Bot) registerHandlers() {
 	bot.b.Handle("/list", bot.handleList)
 	bot.b.Handle("/get", bot.handleGet)
 	bot.b.Handle("/delete", bot.handleDelete)
+	bot.b.Handle("/next", bot.handleNext)
 	bot.b.Handle("/clear", bot.handleClear)
 
 	bot.b.Handle(tele.OnPhoto, bot.handlePhoto)
+	bot.b.Handle(tele.OnText, bot.handleText)
 
 	// Handle button clicks
 	bot.b.Handle(tele.OnCallback, func(c tele.Context) error {
@@ -126,11 +129,12 @@ func (bot *Bot) handleHelp(c tele.Context) error {
 /start - Start the bot
 /help - Show this help message
 /list [page] - List photos (10 per page, e.g. /list 2)
+/next <id> - Force the next photo to be shown by ID
 /get <id1> <id2>... - Retrieve photos from the server
 /delete <id1> <id2>... - Delete photos from the server
 /clear - Remove all Telegram photos
 
-You can also send me any photo to add it to the rotation. Every photo you send will have a "Delete" button under it for easy removal.`
+You can also send me any photo to add it to the rotation. You can include a message with the photo to "name" it, which makes it easier to find and manage when using the /list command. Every photo you send will have a "Delete" button under it for easy removal.`
 	return c.Send(helpText)
 }
 
@@ -222,7 +226,9 @@ func (bot *Bot) handleGet(c tele.Context) error {
 			Caption: fmt.Sprintf("ID: %d\n%s", img.ID, img.Caption),
 		}
 
-		if err := c.Send(photo); err != nil {
+		if msgSent, err := bot.b.Send(c.Recipient(), photo); err == nil {
+			bot.db.Model(&img).Update("telegram_bot_message_id", msgSent.ID)
+		} else {
 			log.Printf("Failed to send photo %d: %v", id, err)
 			c.Send(fmt.Sprintf("Failed to send image %d.", id))
 		}
@@ -264,6 +270,47 @@ func (bot *Bot) handleDelete(c tele.Context) error {
 	}
 
 	return c.Send(resp)
+}
+
+func (bot *Bot) handleNext(c tele.Context) error {
+	if !bot.isAuthorized(c.Sender().ID) {
+		return c.Send("Unauthorized.")
+	}
+
+	args := c.Args()
+	if len(args) == 0 {
+		return c.Send("Usage: /next <id>")
+	}
+
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return c.Send("Invalid ID format.")
+	}
+
+	// Verify image exists and is Telegram source
+	var img model.Image
+	if err := bot.db.Where("id = ? AND source = ?", uint(id), model.SourceTelegram).First(&img).Error; err != nil {
+		return c.Send(fmt.Sprintf("Image ID %d not found in Telegram collection.", id))
+	}
+
+	// Set as global fallback
+	bot.settings.Set("telegram_pushed_image_id", fmt.Sprintf("%d", id))
+
+	// Get target devices
+	targetDeviceIDStr, _ := bot.settings.Get("telegram_target_device_id")
+	if targetDeviceIDStr != "" {
+		targetIDs := strings.Split(targetDeviceIDStr, ",")
+		for _, devIDStr := range targetIDs {
+			devIDStr = strings.TrimSpace(devIDStr)
+			if devIDStr == "" {
+				continue
+			}
+			devID, _ := strconv.Atoi(devIDStr)
+			bot.db.Model(&model.Device{}).Where("id = ?", uint(devID)).Update("pushed_image_id", uint(id))
+		}
+	}
+
+	return c.Send(fmt.Sprintf("Next image set to ID %d. It will be shown on the next request.", id))
 }
 
 func (bot *Bot) deleteImage(id uint) error {
@@ -381,6 +428,7 @@ func (bot *Bot) handlePhoto(c tele.Context) error {
 			log.Printf("Failed to send status message: %v", err)
 			return err
 		}
+		bot.db.Model(&img).Update("telegram_bot_message_id", statusMsg.ID)
 
 		targetIDs := strings.Split(targetDeviceIDStr, ",")
 		var successDevices []string
@@ -433,5 +481,41 @@ func (bot *Bot) handlePhoto(c tele.Context) error {
 		return nil
 	}
 
-	return c.Send(fmt.Sprintf("Photo updated (ID: %d)! It will show up next time the device awakes.", img.ID), menu)
+	msg := fmt.Sprintf("Photo updated (ID: %d)! It will show up next time the device awakes.", img.ID)
+	if msgSent, err := bot.b.Send(c.Recipient(), msg, menu); err == nil {
+		bot.db.Model(&img).Update("telegram_bot_message_id", msgSent.ID)
+	}
+	return nil
+}
+
+func (bot *Bot) handleText(c tele.Context) error {
+	if !bot.isAuthorized(c.Sender().ID) {
+		return nil
+	}
+
+	replyTo := c.Message().ReplyTo
+	if replyTo == nil {
+		return nil
+	}
+
+	// Find the image associated with the bot message being replied to
+	var img model.Image
+	if err := bot.db.Where("telegram_bot_message_id = ?", replyTo.ID).First(&img).Error; err != nil {
+		return nil // Not a reply to a trackable image message
+	}
+
+	newCaption := c.Text()
+	img.Caption = newCaption
+	if err := bot.db.Save(&img).Error; err != nil {
+		log.Printf("Failed to update caption for image %d: %v", img.ID, err)
+		return c.Send("Failed to update caption.")
+	}
+
+	// Update legacy setting if it was the last one (optional, keeping for compatibility)
+	var setting model.Setting
+	setting.Key = "telegram_caption"
+	setting.Value = newCaption
+	bot.db.Save(&setting)
+
+	return c.Send(fmt.Sprintf("Caption for image %d updated to: %s", img.ID, newCaption))
 }
